@@ -1,0 +1,6 @@
+/bin/
+/wallet
+/burst
+*.test
+*.out
+.env
