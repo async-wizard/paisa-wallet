@@ -1,0 +1,124 @@
+// Command wallet runs the Paisa Wallet HTTP service.
+//
+// Run with -healthcheck to probe a running instance's /healthz and exit 0 if it is healthy.
+// The container image is distroless (no shell, no curl), so the Docker HEALTHCHECK has to
+// be the binary itself.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/async-wizard/paisa-wallet/internal/api"
+	"github.com/async-wizard/paisa-wallet/internal/store"
+	"github.com/async-wizard/paisa-wallet/migrations"
+)
+
+// version is stamped at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
+func main() {
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /healthz endpoint and exit")
+	flag.Parse()
+
+	port := envOr("PORT", "8080")
+	if *healthcheck {
+		os.Exit(probe(port))
+	}
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	if err := run(port); err != nil {
+		slog.Error("service stopped", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(port string) error {
+	// Cloud Run and docker stop both send SIGTERM before killing the container.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	maxConns, err := envInt("DB_MAX_CONNS", 6)
+	if err != nil {
+		return err
+	}
+
+	pool, err := store.Open(ctx, dsn, int32(maxConns))
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
+		return err
+	}
+
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           api.NewRouter(pool),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+	slog.Info("service started", "port", port, "version", version, "db_max_conns", maxConns)
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+
+	slog.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func probe(port string) int {
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck failed: status", resp.StatusCode)
+		return 1
+	}
+	return 0
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", key, v)
+	}
+	return n, nil
+}
