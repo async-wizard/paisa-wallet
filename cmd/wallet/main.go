@@ -57,6 +57,10 @@ func run(port string) error {
 	if err != nil {
 		return err
 	}
+	adminToken, err := loadAdminToken()
+	if err != nil {
+		return err
+	}
 
 	pool, err := store.Open(ctx, dsn, int32(maxConns))
 	if err != nil {
@@ -70,7 +74,7 @@ func run(port string) error {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewRouter(wallet.NewService(pool)),
+		Handler:           api.NewRouter(wallet.NewService(pool), adminToken),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -103,6 +107,23 @@ func probe(port string) int {
 		return 1
 	}
 	return 0
+}
+
+// devAdminToken is the faucet token docker-compose uses locally. It is public (it's in the
+// repo), so the service refuses it unless APP_ENV=local says this is a local stack.
+const devAdminToken = "local-dev-admin-token-do-not-deploy"
+
+// loadAdminToken returns the faucet token. The faucet mints money, so a missing, short or
+// publicly known token stops the service from starting rather than exposing it.
+func loadAdminToken() (string, error) {
+	token := os.Getenv("ADMIN_TOKEN")
+	if len(token) < 32 {
+		return "", errors.New("ADMIN_TOKEN must be set to at least 32 characters")
+	}
+	if token == devAdminToken && os.Getenv("APP_ENV") != "local" {
+		return "", errors.New("ADMIN_TOKEN is the local development default; set a real secret or APP_ENV=local")
+	}
+	return token, nil
 }
 
 func envOr(key, fallback string) string {

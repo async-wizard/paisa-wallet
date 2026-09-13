@@ -25,6 +25,8 @@ services:
       DATABASE_URL: postgres://paisa:paisa@db:5432/paisa?sslmode=disable
       DB_MAX_CONNS: "10"
       PORT: "8080"
+      APP_ENV: local
+      ADMIN_TOKEN: local-dev-admin-token-do-not-deploy
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:

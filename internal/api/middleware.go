@@ -19,7 +19,8 @@ type (
 )
 
 type handler struct {
-	svc *wallet.Service
+	svc        *wallet.Service
+	adminToken string
 }
 
 func withRequestID(next http.Handler) http.Handler {
