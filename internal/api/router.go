@@ -3,10 +3,11 @@ package api
 import (
 	"net/http"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/async-wizard/paisa-wallet/internal/wallet"
 )
 
-func NewRouter(pool *pgxpool.Pool) http.Handler {
+func NewRouter(svc *wallet.Service) http.Handler {
+	h := &handler{svc: svc}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -14,5 +15,8 @@ func NewRouter(pool *pgxpool.Pool) http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	return mux
+	mux.HandleFunc("POST /wallets", h.requireUser(h.createWallet))
+	mux.HandleFunc("GET /wallets/{id}", h.requireUser(h.getWallet))
+
+	return withRequestID(mux)
 }

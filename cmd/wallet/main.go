@@ -20,6 +20,7 @@ import (
 
 	"github.com/async-wizard/paisa-wallet/internal/api"
 	"github.com/async-wizard/paisa-wallet/internal/store"
+	"github.com/async-wizard/paisa-wallet/internal/wallet"
 	"github.com/async-wizard/paisa-wallet/migrations"
 )
 
@@ -69,7 +70,7 @@ func run(port string) error {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewRouter(pool),
+		Handler:           api.NewRouter(wallet.NewService(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
