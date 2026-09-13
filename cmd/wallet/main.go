@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,15 +38,17 @@ func main() {
 		os.Exit(probe(port))
 	}
 
-	slog.SetDefault(obs.NewLogger(os.Stdout, os.Getenv("GOOGLE_CLOUD_PROJECT")))
+	logs := obs.NewStream()
+	slog.SetDefault(obs.NewLogger(io.MultiWriter(os.Stdout, logs), os.Getenv("GOOGLE_CLOUD_PROJECT")))
+	obs.SetBuildInfo(version)
 
-	if err := run(port); err != nil {
+	if err := run(port, logs); err != nil {
 		slog.Error("service stopped", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(port string) error {
+func run(port string, logs *obs.Stream) error {
 	// Cloud Run and docker stop both send SIGTERM before killing the container.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -78,7 +81,7 @@ func run(port string) error {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewRouter(svc, adminToken),
+		Handler:           api.NewRouter(svc, adminToken, logs),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

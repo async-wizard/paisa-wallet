@@ -7,7 +7,7 @@ import (
 	"github.com/async-wizard/paisa-wallet/internal/wallet"
 )
 
-func NewRouter(svc *wallet.Service, adminToken string) http.Handler {
+func NewRouter(svc *wallet.Service, adminToken string, logs *obs.Stream) http.Handler {
 	h := &handler{svc: svc, adminToken: adminToken}
 	mux := http.NewServeMux()
 	handle := func(pattern string, fn http.HandlerFunc) {
@@ -20,6 +20,8 @@ func NewRouter(svc *wallet.Service, adminToken string) http.Handler {
 	})
 	handle("GET /metrics", obs.MetricsHandler().ServeHTTP)
 	handle("GET /internal/invariants", h.invariants)
+	handle("GET /logs/stream", logs.ServeHTTP)
+	handle("GET /dashboard", dashboard)
 
 	handle("POST /wallets", h.requireUser(h.createWallet))
 	handle("GET /wallets/{id}", h.requireUser(h.getWallet))

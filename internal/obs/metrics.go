@@ -3,6 +3,7 @@ package obs
 import (
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -48,6 +49,11 @@ var (
 		Help: "Requests rejected because their idempotency key was used with a different body.",
 	}, []string{"kind"})
 
+	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "paisa_build_info",
+		Help: "Always 1. Labels identify the running version and this process instance, so a reader polling /metrics can tell when it reached a different instance.",
+	}, []string{"version", "instance"})
+
 	WalletGetOrCreate = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "paisa_wallet_get_or_create_total",
 		Help: "POST /wallets outcomes: created a wallet or returned the existing one.",
@@ -60,7 +66,7 @@ func init() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		HTTPRequests, HTTPDuration,
 		TransfersCreated, TransfersSucceeded, TransfersDeclined,
-		IdempotentReplays, IdempotencyConflicts, WalletGetOrCreate,
+		IdempotentReplays, IdempotencyConflicts, WalletGetOrCreate, buildInfo,
 	)
 
 	// Create every series up front, so a counter reads 0 rather than being absent until
@@ -74,6 +80,11 @@ func init() {
 	}
 	WalletGetOrCreate.WithLabelValues("created")
 	WalletGetOrCreate.WithLabelValues("existing")
+}
+
+// SetBuildInfo records the version and a random id for this process.
+func SetBuildInfo(version string) {
+	buildInfo.WithLabelValues(version, uuid.NewString()[:8]).Set(1)
 }
 
 func MetricsHandler() http.Handler {
