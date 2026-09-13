@@ -21,7 +21,6 @@ func NewRouter(svc *wallet.Service, adminToken string, logs *obs.Stream) http.Ha
 	handle("GET /metrics", obs.MetricsHandler().ServeHTTP)
 	handle("GET /internal/invariants", h.invariants)
 	handle("GET /logs/stream", logs.ServeHTTP)
-	handle("GET /dashboard", dashboard)
 
 	handle("POST /wallets", h.requireUser(h.createWallet))
 	handle("GET /wallets/{id}", h.requireUser(h.getWallet))

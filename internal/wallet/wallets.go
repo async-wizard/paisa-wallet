@@ -26,7 +26,6 @@ func (s *Service) GetOrCreateWallet(ctx context.Context, userID uuid.UUID) (w Wa
 		userID,
 	).Scan(&w.ID, &w.BalancePaise)
 	if err == nil {
-		obs.WalletGetOrCreate.WithLabelValues("created").Inc()
 		obs.Event(ctx, "wallet.created", "wallet_id", w.ID, "user_id", userID)
 		return w, true, nil
 	}
@@ -38,7 +37,6 @@ func (s *Service) GetOrCreateWallet(ctx context.Context, userID uuid.UUID) (w Wa
 		`SELECT id, balance_paise FROM wallets WHERE user_id = $1`, userID,
 	).Scan(&w.ID, &w.BalancePaise)
 	if err == nil {
-		obs.WalletGetOrCreate.WithLabelValues("existing").Inc()
 		obs.Event(ctx, "wallet.getorcreate.existing", "wallet_id", w.ID, "user_id", userID)
 	}
 	return w, false, err

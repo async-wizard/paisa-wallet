@@ -169,7 +169,6 @@ func (s *Service) execute(ctx context.Context, kind string, requester, from, to 
 
 	switch {
 	case errors.Is(err, ErrKeyReused):
-		obs.IdempotencyConflicts.WithLabelValues(kind).Inc()
 		obs.Event(ctx, "transfer.key_conflict", "kind", kind, "idempotency_key", key)
 	case err != nil:
 	case out.Replayed:
@@ -181,7 +180,6 @@ func (s *Service) execute(ctx context.Context, kind string, requester, from, to 
 		obs.Event(ctx, "transfer.created",
 			"kind", kind, "transfer_id", t.ID, "from", from, "to", to, "amount_paise", amount, "idempotency_key", key)
 		if m.moved {
-			obs.TransfersSucceeded.WithLabelValues(kind).Inc()
 			obs.Event(ctx, "transfer.debited",
 				"kind", kind, "transfer_id", t.ID, "wallet_id", from, "amount_paise", amount, "balance_after_paise", m.fromBalance)
 			obs.Event(ctx, "transfer.credited",

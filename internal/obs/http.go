@@ -26,11 +26,9 @@ func Route(pattern string, h http.Handler) http.Handler {
 // quietRoutes are measured but left out of the access log: probes and scrapes would
 // otherwise drown out the requests worth reading.
 var quietRoutes = map[string]bool{
-	"GET /healthz":             true,
-	"GET /metrics":             true,
-	"GET /logs/stream":         true,
-	"GET /dashboard":           true,
-	"GET /internal/invariants": true,
+	"GET /healthz":     true,
+	"GET /metrics":     true,
+	"GET /logs/stream": true,
 }
 
 // Instrument records request metrics and writes one access-log line per request.

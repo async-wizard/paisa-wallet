@@ -39,8 +39,7 @@ func main() {
 	}
 
 	logs := obs.NewStream()
-	slog.SetDefault(obs.NewLogger(io.MultiWriter(os.Stdout, logs), os.Getenv("GOOGLE_CLOUD_PROJECT")))
-	obs.SetBuildInfo(version)
+	slog.SetDefault(obs.NewLogger(io.MultiWriter(os.Stdout, logs)))
 
 	if err := run(port, logs); err != nil {
 		slog.Error("service stopped", "err", err)

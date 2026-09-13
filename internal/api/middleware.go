@@ -28,9 +28,7 @@ func withRequestID(next http.Handler) http.Handler {
 			id = uuid.NewString()
 		}
 		w.Header().Set(requestIDHeader, id)
-		ctx := obs.WithRequestID(r.Context(), id)
-		ctx = obs.WithTrace(ctx, r.Header.Get("X-Cloud-Trace-Context"))
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(obs.WithRequestID(r.Context(), id)))
 	})
 }
 

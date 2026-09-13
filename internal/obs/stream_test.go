@@ -11,19 +11,16 @@ import (
 	"time"
 )
 
-func logLine(event, requestID string) []byte {
-	return []byte(fmt.Sprintf(`{"message":%q,"event":%q,"request_id":%q}`+"\n", event, event, requestID))
+func logLine(event string) []byte {
+	return fmt.Appendf(nil, `{"msg":%q,"event":%q}`+"\n", event, event)
 }
 
 // readEvents collects SSE data lines until n arrive or the timeout passes.
-func readEvents(t *testing.T, url string, header http.Header, n int) []string {
+func readEvents(t *testing.T, url string, n int) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	for k, v := range header {
-		req.Header[k] = v
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -40,50 +37,38 @@ func readEvents(t *testing.T, url string, header http.Header, n int) []string {
 	return got
 }
 
-func TestStreamFiltersBacklogAndResumes(t *testing.T) {
+// A subscriber gets the buffered lines in order, then lines written after it connected.
+func TestStreamBacklogThenLive(t *testing.T) {
 	s := NewStream()
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 
-	for _, l := range [][]byte{
-		logLine("transfer.created", "r1"),
-		logLine("transfer.declined", "r1"),
-		logLine("transfer.created", "r2"),
-		logLine("http.request", "r1"),
-	} {
-		_, _ = s.Write(l)
-	}
-
-	if got := readEvents(t, srv.URL+"?event=transfer.created", nil, 2); len(got) != 2 {
-		t.Fatalf("event filter: got %d lines, want 2: %v", len(got), got)
-	}
-	got := readEvents(t, srv.URL+"?correlation_id=r1", nil, 3)
-	if len(got) != 3 || !strings.Contains(got[1], "transfer.declined") {
-		t.Fatalf("correlation filter: got %v", got)
-	}
-
-	// Resuming after id 2 skips the first two lines. The stream stays open, so a line
-	// written afterwards must also arrive.
+	_, _ = s.Write(logLine("transfer.created"))
+	_, _ = s.Write(logLine("transfer.declined"))
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		_, _ = s.Write(logLine("transfer.credited", "r3"))
+		_, _ = s.Write(logLine("transfer.credited"))
 	}()
-	got = readEvents(t, srv.URL, http.Header{"Last-Event-ID": {"2"}}, 3)
-	if len(got) != 3 || !strings.Contains(got[0], `"r2"`) || !strings.Contains(got[2], "transfer.credited") {
-		t.Fatalf("resume: got %v", got)
+
+	got := readEvents(t, srv.URL, 3)
+	if len(got) != 3 ||
+		!strings.Contains(got[0], "transfer.created") ||
+		!strings.Contains(got[1], "transfer.declined") ||
+		!strings.Contains(got[2], "transfer.credited") {
+		t.Fatalf("got %v", got)
 	}
 }
 
 // Old lines fall out of the ring, and writes never block on a subscriber that isn't reading.
 func TestStreamRingAndSlowSubscriber(t *testing.T) {
 	s := NewStream()
-	stuck := make(chan entry) // unbuffered and never read
+	stuck := make(chan []byte) // unbuffered and never read
 	s.subs[stuck] = struct{}{}
 
 	done := make(chan struct{})
 	go func() {
 		for i := range streamBuffer + 10 {
-			_, _ = s.Write(logLine("http.request", fmt.Sprint(i)))
+			_, _ = s.Write(logLine(fmt.Sprintf("event.%d", i)))
 		}
 		close(done)
 	}()
@@ -95,8 +80,7 @@ func TestStreamRingAndSlowSubscriber(t *testing.T) {
 	if len(s.ring) != streamBuffer {
 		t.Fatalf("ring holds %d lines, want %d", len(s.ring), streamBuffer)
 	}
-	oldest := s.ring[s.next]
-	if oldest.seq != 11 {
-		t.Fatalf("oldest retained seq %d, want 11", oldest.seq)
+	if oldest := string(s.ring[s.next]); !strings.Contains(oldest, `"event.10"`) {
+		t.Fatalf("oldest retained line %s, want event.10", oldest)
 	}
 }
