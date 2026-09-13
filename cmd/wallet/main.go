@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/async-wizard/paisa-wallet/internal/api"
+	"github.com/async-wizard/paisa-wallet/internal/obs"
 	"github.com/async-wizard/paisa-wallet/internal/store"
 	"github.com/async-wizard/paisa-wallet/internal/wallet"
 	"github.com/async-wizard/paisa-wallet/migrations"
@@ -36,7 +37,7 @@ func main() {
 		os.Exit(probe(port))
 	}
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.SetDefault(obs.NewLogger(os.Stdout, os.Getenv("GOOGLE_CLOUD_PROJECT")))
 
 	if err := run(port); err != nil {
 		slog.Error("service stopped", "err", err)

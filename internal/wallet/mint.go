@@ -22,5 +22,5 @@ func (s *Service) Mint(ctx context.Context, to uuid.UUID, amount int64, key stri
 	if err != nil {
 		return Outcome{}, err
 	}
-	return s.execute(ctx, owner, TreasuryID, to, amount, key, fingerprint("mint", TreasuryID, to, amount))
+	return s.execute(ctx, "mint", owner, TreasuryID, to, amount, key)
 }

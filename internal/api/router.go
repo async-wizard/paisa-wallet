@@ -3,24 +3,28 @@ package api
 import (
 	"net/http"
 
+	"github.com/async-wizard/paisa-wallet/internal/obs"
 	"github.com/async-wizard/paisa-wallet/internal/wallet"
 )
 
 func NewRouter(svc *wallet.Service, adminToken string) http.Handler {
 	h := &handler{svc: svc, adminToken: adminToken}
 	mux := http.NewServeMux()
+	handle := func(pattern string, fn http.HandlerFunc) {
+		mux.Handle(pattern, obs.Route(pattern, fn))
+	}
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	handle("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	mux.HandleFunc("POST /wallets", h.requireUser(h.createWallet))
-	mux.HandleFunc("GET /wallets/{id}", h.requireUser(h.getWallet))
-	mux.HandleFunc("POST /wallets/{id}/credit", h.creditWallet)
+	handle("POST /wallets", h.requireUser(h.createWallet))
+	handle("GET /wallets/{id}", h.requireUser(h.getWallet))
+	handle("POST /wallets/{id}/credit", h.creditWallet)
 
-	mux.HandleFunc("POST /transfers", h.requireUser(h.createTransfer))
-	mux.HandleFunc("GET /transfers/{id}", h.requireUser(h.getTransfer))
+	handle("POST /transfers", h.requireUser(h.createTransfer))
+	handle("GET /transfers/{id}", h.requireUser(h.getTransfer))
 
-	return withRequestID(mux)
+	return withRequestID(obs.AccessLog(mux))
 }

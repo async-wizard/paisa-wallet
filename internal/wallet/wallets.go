@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/async-wizard/paisa-wallet/internal/obs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -25,6 +26,7 @@ func (s *Service) GetOrCreateWallet(ctx context.Context, userID uuid.UUID) (w Wa
 		userID,
 	).Scan(&w.ID, &w.BalancePaise)
 	if err == nil {
+		obs.Event(ctx, "wallet.created", "wallet_id", w.ID, "user_id", userID)
 		return w, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -34,6 +36,9 @@ func (s *Service) GetOrCreateWallet(ctx context.Context, userID uuid.UUID) (w Wa
 	err = s.pool.QueryRow(ctx,
 		`SELECT id, balance_paise FROM wallets WHERE user_id = $1`, userID,
 	).Scan(&w.ID, &w.BalancePaise)
+	if err == nil {
+		obs.Event(ctx, "wallet.getorcreate.existing", "wallet_id", w.ID, "user_id", userID)
+	}
 	return w, false, err
 }
 

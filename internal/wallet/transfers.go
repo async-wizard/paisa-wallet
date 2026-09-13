@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/async-wizard/paisa-wallet/internal/obs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -87,7 +88,7 @@ func (s *Service) Transfer(ctx context.Context, requester, from, to uuid.UUID, a
 		return Outcome{}, ErrForbidden
 	}
 
-	return s.execute(ctx, requester, from, to, amount, key, fingerprint("transfer", from, to, amount))
+	return s.execute(ctx, "transfer", requester, from, to, amount, key)
 }
 
 // execute is the single money-movement path, used for both transfers and mints.
@@ -99,18 +100,25 @@ func (s *Service) Transfer(ctx context.Context, requester, from, to uuid.UUID, a
 //  2. Move the money (moveMoney), or record a decline.
 //  3. Store the response on the row and send exactly those bytes.
 //
-// Key consumed and money moved commit together or not at all.
-func (s *Service) execute(ctx context.Context, requester, from, to uuid.UUID, amount int64, key, fp string) (Outcome, error) {
+// Key consumed and money moved commit together or not at all. Domain events are logged
+// only after the commit succeeds, so the logs never describe a movement that rolled back.
+func (s *Service) execute(ctx context.Context, kind string, requester, from, to uuid.UUID, amount int64, key string) (Outcome, error) {
 	if amount <= 0 || amount > MaxAmountPaise {
 		return Outcome{}, ErrInvalidAmount
 	}
 	if key == "" || len(key) > 128 {
 		return Outcome{}, ErrInvalidRequest
 	}
+	fp := fingerprint(kind, from, to, amount)
 
-	var out Outcome
+	var (
+		out      Outcome
+		t        Transfer
+		m        movement
+		replayID uuid.UUID
+	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		t := Transfer{From: from, To: to, AmountPaise: amount}
+		t = Transfer{From: from, To: to, AmountPaise: amount}
 		err := tx.QueryRow(ctx, `
 			INSERT INTO transfers (requester_user_id, idempotency_key, request_fingerprint,
 			                       from_wallet, to_wallet, amount_paise, status)
@@ -120,21 +128,21 @@ func (s *Service) execute(ctx context.Context, requester, from, to uuid.UUID, am
 			requester, key, fp, from, to, amount,
 		).Scan(&t.ID, &t.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			out, err = replay(ctx, tx, requester, key, fp)
+			replayID, out, err = replay(ctx, tx, requester, key, fp)
 			return err
 		}
 		if err != nil {
 			return fmt.Errorf("insert transfer: %w", err)
 		}
 
-		moved, err := moveMoney(ctx, tx, t.ID, from, to, amount)
+		m, err = moveMoney(ctx, tx, t.ID, from, to, amount)
 		if err != nil {
 			return err
 		}
 
 		out.StatusCode = http.StatusCreated
 		t.Status = StatusSucceeded
-		if !moved {
+		if !m.moved {
 			out.StatusCode = http.StatusUnprocessableEntity
 			t.Status = StatusDeclined
 			t.DeclineReason = ReasonInsufficientFunds
@@ -158,71 +166,103 @@ func (s *Service) execute(ctx context.Context, requester, from, to uuid.UUID, am
 			t.ID, t.Status, reason, out.StatusCode, body,
 		).Scan(&out.Body)
 	})
+
+	switch {
+	case errors.Is(err, ErrKeyReused):
+		obs.Event(ctx, "transfer.key_conflict", "kind", kind, "idempotency_key", key)
+	case err != nil:
+	case out.Replayed:
+		obs.Event(ctx, "transfer.idempotent_replay",
+			"kind", kind, "transfer_id", replayID, "idempotency_key", key, "status_code", out.StatusCode)
+	default:
+		obs.Event(ctx, "transfer.created",
+			"kind", kind, "transfer_id", t.ID, "from", from, "to", to, "amount_paise", amount, "idempotency_key", key)
+		if m.moved {
+			obs.Event(ctx, "transfer.debited",
+				"kind", kind, "transfer_id", t.ID, "wallet_id", from, "amount_paise", amount, "balance_after_paise", m.fromBalance)
+			obs.Event(ctx, "transfer.credited",
+				"kind", kind, "transfer_id", t.ID, "wallet_id", to, "amount_paise", amount, "balance_after_paise", m.toBalance)
+		} else {
+			obs.Event(ctx, "transfer.declined",
+				"kind", kind, "transfer_id", t.ID, "wallet_id", from, "amount_paise", amount, "reason", t.DeclineReason)
+		}
+	}
 	return out, err
 }
 
-// moveMoney locks both wallets, then debits and credits. It reports false, having changed
-// nothing, when the source can't cover the amount.
+type movement struct {
+	moved                  bool
+	fromBalance, toBalance int64
+}
+
+// moveMoney locks both wallets, then debits and credits. It reports moved=false, having
+// changed nothing, when the source can't cover the amount.
 //
 // Both rows are locked up front, lowest id first (Postgres sorts before applying the
 // locking clause). A fixed lock order means concurrent A->B and B->A transfers queue
 // instead of deadlocking. Locking before writing means a declined debit never has to undo
 // a credit that already ran.
-func moveMoney(ctx context.Context, tx pgx.Tx, transferID, from, to uuid.UUID, amount int64) (bool, error) {
+func moveMoney(ctx context.Context, tx pgx.Tx, transferID, from, to uuid.UUID, amount int64) (movement, error) {
+	var m movement
 	locked, err := tx.Exec(ctx,
 		`SELECT id FROM wallets WHERE id IN ($1, $2) ORDER BY id FOR NO KEY UPDATE`, from, to)
 	if err != nil {
-		return false, fmt.Errorf("lock wallets: %w", err)
+		return m, fmt.Errorf("lock wallets: %w", err)
 	}
 	if locked.RowsAffected() != 2 {
-		return false, ErrNotFound
+		return m, ErrNotFound
 	}
 
-	debited, err := tx.Exec(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE wallets SET balance_paise = balance_paise - $1, updated_at = now()
-		 WHERE id = $2 AND (is_treasury OR balance_paise >= $1)`,
-		amount, from)
-	if err != nil {
-		return false, fmt.Errorf("debit: %w", err)
+		 WHERE id = $2 AND (is_treasury OR balance_paise >= $1)
+		RETURNING balance_paise`,
+		amount, from).Scan(&m.fromBalance)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return m, nil
 	}
-	if debited.RowsAffected() == 0 {
-		return false, nil
+	if err != nil {
+		return m, fmt.Errorf("debit: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE wallets SET balance_paise = balance_paise + $1, updated_at = now() WHERE id = $2`,
-		amount, to); err != nil {
-		return false, fmt.Errorf("credit: %w", err)
+	if err := tx.QueryRow(ctx,
+		`UPDATE wallets SET balance_paise = balance_paise + $1, updated_at = now() WHERE id = $2 RETURNING balance_paise`,
+		amount, to).Scan(&m.toBalance); err != nil {
+		return m, fmt.Errorf("credit: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO ledger_entries (transfer_id, wallet_id, delta_paise)
 		VALUES ($1, $2, $3), ($1, $4, $5)`,
 		transferID, from, -amount, to, amount); err != nil {
-		return false, fmt.Errorf("ledger: %w", err)
+		return m, fmt.Errorf("ledger: %w", err)
 	}
-	return true, nil
+	m.moved = true
+	return m, nil
 }
 
 // replay returns the stored response for an idempotency key that is already used. The
 // SELECT is a new statement, so under READ COMMITTED it sees the row the conflicting
 // request committed while our insert was waiting.
-func replay(ctx context.Context, tx pgx.Tx, requester uuid.UUID, key, fp string) (Outcome, error) {
-	var storedFP string
+func replay(ctx context.Context, tx pgx.Tx, requester uuid.UUID, key, fp string) (uuid.UUID, Outcome, error) {
+	var (
+		id       uuid.UUID
+		storedFP string
+	)
 	out := Outcome{Replayed: true}
 	err := tx.QueryRow(ctx, `
-		SELECT request_fingerprint, response_status, response_body
+		SELECT id, request_fingerprint, response_status, response_body
 		  FROM transfers
 		 WHERE requester_user_id = $1 AND idempotency_key = $2`,
 		requester, key,
-	).Scan(&storedFP, &out.StatusCode, &out.Body)
+	).Scan(&id, &storedFP, &out.StatusCode, &out.Body)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("read existing transfer: %w", err)
+		return id, Outcome{}, fmt.Errorf("read existing transfer: %w", err)
 	}
 	if storedFP != fp {
-		return Outcome{}, ErrKeyReused
+		return id, Outcome{}, ErrKeyReused
 	}
-	return out, nil
+	return id, out, nil
 }
 
 // GetTransfer returns a transfer's stored representation if the user sent it or owns

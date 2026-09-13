@@ -7,16 +7,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/async-wizard/paisa-wallet/internal/obs"
 	"github.com/async-wizard/paisa-wallet/internal/wallet"
 	"github.com/google/uuid"
 )
 
 const requestIDHeader = "X-Request-Id"
 
-type (
-	requestIDKey struct{}
-	userIDKey    struct{}
-)
+type userIDKey struct{}
 
 type handler struct {
 	svc        *wallet.Service
@@ -30,7 +28,9 @@ func withRequestID(next http.Handler) http.Handler {
 			id = uuid.NewString()
 		}
 		w.Header().Set(requestIDHeader, id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id)))
+		ctx := obs.WithRequestID(r.Context(), id)
+		ctx = obs.WithTrace(ctx, r.Header.Get("X-Cloud-Trace-Context"))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -44,11 +44,6 @@ func validRequestID(id string) bool {
 		}
 	}
 	return true
-}
-
-func requestID(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey{}).(string)
-	return id
 }
 
 func (h *handler) requireUser(next http.HandlerFunc) http.HandlerFunc {
