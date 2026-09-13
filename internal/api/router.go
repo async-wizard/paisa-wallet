@@ -18,6 +18,8 @@ func NewRouter(svc *wallet.Service, adminToken string) http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	handle("GET /metrics", obs.MetricsHandler().ServeHTTP)
+	handle("GET /internal/invariants", h.invariants)
 
 	handle("POST /wallets", h.requireUser(h.createWallet))
 	handle("GET /wallets/{id}", h.requireUser(h.getWallet))
@@ -26,5 +28,5 @@ func NewRouter(svc *wallet.Service, adminToken string) http.Handler {
 	handle("POST /transfers", h.requireUser(h.createTransfer))
 	handle("GET /transfers/{id}", h.requireUser(h.getTransfer))
 
-	return withRequestID(obs.AccessLog(mux))
+	return withRequestID(obs.Instrument(mux))
 }

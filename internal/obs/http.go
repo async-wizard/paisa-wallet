@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -22,16 +23,16 @@ func Route(pattern string, h http.Handler) http.Handler {
 	})
 }
 
-// quietRoutes are served normally but left out of the access log: probes and scrapes
-// would otherwise drown out the requests worth reading.
+// quietRoutes are measured but left out of the access log: probes and scrapes would
+// otherwise drown out the requests worth reading.
 var quietRoutes = map[string]bool{
 	"GET /healthz":     true,
 	"GET /metrics":     true,
 	"GET /logs/stream": true,
 }
 
-// AccessLog writes one line per request with its route, status and duration.
-func AccessLog(next http.Handler) http.Handler {
+// Instrument records request metrics and writes one access-log line per request.
+func Instrument(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt := &route{pattern: "unmatched"}
 		ctx := context.WithValue(r.Context(), routeKey{}, rt)
@@ -39,6 +40,10 @@ func AccessLog(next http.Handler) http.Handler {
 		start := time.Now()
 
 		next.ServeHTTP(rec, r.WithContext(ctx))
+		elapsed := time.Since(start)
+
+		HTTPRequests.WithLabelValues(rt.pattern, strconv.Itoa(rec.Status())).Inc()
+		HTTPDuration.WithLabelValues(rt.pattern).Observe(elapsed.Seconds())
 
 		if quietRoutes[rt.pattern] {
 			return
@@ -49,7 +54,7 @@ func AccessLog(next http.Handler) http.Handler {
 			"route", rt.pattern,
 			"path", r.URL.Path,
 			"status", rec.Status(),
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"duration_ms", float64(elapsed.Microseconds())/1000,
 			"bytes", rec.bytes,
 		)
 	})
