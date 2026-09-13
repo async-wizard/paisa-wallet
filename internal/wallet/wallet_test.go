@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -29,6 +31,8 @@ func setup(t *testing.T) (*Service, *pgxpool.Pool) {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
+	// Domain events would otherwise flood the output of a failing run.
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	pool, err := store.Open(ctx, dsn, 20)
 	if err != nil {
@@ -398,5 +402,31 @@ func TestAmountIsJSONInteger(t *testing.T) {
 	n, ok := body["amount_paise"].(json.Number)
 	if !ok || strings.ContainsAny(n.String(), ".eE") || n.String() != "250" {
 		t.Fatalf("amount_paise = %#v, want the JSON integer 250", body["amount_paise"])
+	}
+}
+
+// The live audit agrees with the ledger after real activity, including a decline.
+func TestCheckInvariantsHold(t *testing.T) {
+	svc, _ := setup(t)
+	ctx := context.Background()
+	alice, aw := newWallet(t, svc)
+	_, bw := newWallet(t, svc)
+	fund(t, svc, aw, 1000)
+	if _, err := svc.Transfer(ctx, alice, aw, bw, 400, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Transfer(ctx, alice, aw, bw, 5000, "declined"); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := svc.CheckInvariants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inv.OK {
+		t.Fatalf("invariants violated: %+v", inv)
+	}
+	if inv.UserBalanceSumPaise != -inv.TreasuryBalancePaise {
+		t.Fatalf("user balances %d do not equal minted total %d", inv.UserBalanceSumPaise, -inv.TreasuryBalancePaise)
 	}
 }

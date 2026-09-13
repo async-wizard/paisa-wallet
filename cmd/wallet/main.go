@@ -73,9 +73,12 @@ func run(port string) error {
 		return err
 	}
 
+	svc := wallet.NewService(pool)
+	obs.Registry.MustRegister(api.NewInvariantsCollector(svc))
+
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.NewRouter(wallet.NewService(pool), adminToken),
+		Handler:           api.NewRouter(svc, adminToken),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
