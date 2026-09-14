@@ -20,7 +20,7 @@ type Stream struct {
 const (
 	streamBuffer         = 1000
 	streamMaxSubscribers = 20
-	// Under Cloud Run's default 300s request timeout; clients reconnect to keep watching.
+	// Bounded so a forgotten viewer doesn't hold a connection forever; reconnect to keep watching.
 	streamMaxDuration = 4 * time.Minute
 )
 

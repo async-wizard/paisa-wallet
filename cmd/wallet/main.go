@@ -48,7 +48,7 @@ func main() {
 }
 
 func run(port string, logs *obs.Stream) error {
-	// Cloud Run and docker stop both send SIGTERM before killing the container.
+	// Render and docker stop both send SIGTERM before killing the container.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
